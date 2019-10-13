@@ -73,7 +73,10 @@ Quick explanation on how this algorithm works:
 # Uses YUV420 image format as the Y component corresponds to image intensity (gray image)
 # and thus there is no need to convert from RGB to BW
 
-RUN_TIMER = 5 # seconds
+## Run a track detection algorithm on a single horizontal line.
+# Uses YUV420 image format as the Y component corresponds to image intensity (gray image)
+# and thus there is no need to convert from RGB to BW
+
 history=[]
 
 camera = PiCamera()
@@ -99,9 +102,63 @@ b, a = butter(3, 0.1)
 line_pos    = CAMERA_CENTER
 first_frame = True
 
-# start car
-motor.duty_cycle = MOTOR_BRAKE + 120000
+#######################
+# Definition of p, i, d
+#######################
 
+# # 1. pass with d, p
+# Kp,Ki,Kd = 10000,0,2500
+# speed = 180000
+# midspeed = 180000
+# slowspeed = 140000
+
+# # 2. pass with d, p
+# Kp,Ki,Kd = 11500,0,2500
+# speed = 200000
+# midspeed = 200000
+# slowspeed = 140000
+
+
+# 3. pass with d, p
+# Kp,Ki,Kd = 11000,0,2500
+# speed = 190000
+# midspeed = 190000
+# slowspeed = 140000
+
+# 4 pass with d, p ,i
+Kp,Ki,Kd = 11500,10,2500
+speed=220000
+midspeed = 230000
+slowspeed = 170000
+
+# test with d, p
+# Kp,Ki,Kd = 13000,0,2700
+# speed=220000
+# midspeed = 230000
+# slowspeed = 170000
+
+# start car
+
+motor.duty_cycle = MOTOR_BRAKE + speed
+
+TIMEPERIOD = 60
+# TIMEPERIOD = 15
+# PID config
+
+
+
+
+# Kp,Ki,Kd = 12000,10,1000
+# Kp,Ki,Kd = 9000,10,1000
+# Kp,Ki,Kd = 11000,10,500
+# current error, previous error, previous error of err_prev
+err,err_prev,err_last,integral=0,0,0,0
+errlist=[]
+
+track=["o"]
+increment = 0
+
+# count = 0  # count of images
 for f in stream:
     if first_frame:
         first_frame = False
@@ -109,10 +166,8 @@ for f in stream:
         rawCapture.truncate(0)
         continue
     
-    # Stop after RUN_TIMER seconds
-    if (time.time() - t) > RUN_TIMER:
+    if (time.time() - t) > TIMEPERIOD:
         break
-        
     # Get the intensity component of the image (a trick to get black and white images)
     I = f.array[:, :, 0]
     
@@ -120,11 +175,14 @@ for f in stream:
     rawCapture.truncate(0)
     
     # Select a horizontal line in the middle of the image
-    L = I[195, :]
+#     L = I[300, :]
+    L = I[250, :]
+#     print("L:",L)
 
     # Smooth the transitions so we can detect the peaks 
     Lf = filtfilt(b, a, L)
     history.append(Lf)
+#     print("LF:",Lf)
 
     # Find peaks which are higher than 0.5
     p = find_peaks(Lf, height=160)
@@ -135,7 +193,7 @@ for f in stream:
     line_right  = None
     peaks_left  = peaks[peaks < CAMERA_CENTER]
     peaks_right = peaks[peaks > CAMERA_CENTER]
-
+    
     if peaks_left.size:
         line_left = peaks_left.max()
 
@@ -145,26 +203,74 @@ for f in stream:
     if line_left and line_right:
         line_pos    = (line_left + line_right ) // 2
         track_width = line_right - line_left
+        speed=midspeed
+#         Kp=
+        track.append("mid")
         
     elif line_left and not line_right:
         line_pos    = line_left + int(track_width / 2)
+        speed=slowspeed
+        track.append("turnRight")
         
     elif not line_left and line_right:
         line_pos    = line_right - int(track_width / 2)
-        
+        speed=slowspeed
+        track.append("turnLeft")
     else:
+        speed=slowspeed
         print("no line")
         
-    print(line_pos, peaks)
+    
+#     pid
+    err = CAMERA_CENTER - line_pos
+    if increment<=200000:
+        integral += err
+#     increment  = Kp*err
+    diff = err-err_prev
+#     increment = Kp*err + Kd* (err - err_prev)
+#     increment = Kp*err + Ki*integral
+    increment = Kp*err + Ki*integral + Kd* (err - err_prev)
+    
 
-        
-    DUTY_CYCLE = SERVO_MIDDLE + 5000 * (CAMERA_CENTER - line_pos)
+    err_prev = err
+    errlist.append(err)
+    
+  
+    DUTY_CYCLE = SERVO_MIDDLE + increment
     if DUTY_CYCLE > 2000000:
         DUTY_CYCLE = 2000000
     if DUTY_CYCLE < 1000000:
         DUTY_CYCLE = 1000000
         
+#     print("line_pos:",line_pos,"CAMERA", CAMERA_CENTER, "err", err,"difference",diff,"increment",increment)
+#     print("now:",track[-1])
+    
+    ################################
+    # threshold for takinng images #
+#     ################################
+#     if np.abs(err) > 40:
+#         plt.imsave('%d.png'%count, I)
+    ################################
+    # threshold for takinng images #
+    ################################
+
+    
+    
+#     if abs(err)<11:
+#         speed = speed+500
+#     elif abs(err)>60:
+#         speed = 160000
+#     else:
+#         speed = 180000
+    
+    motor.duty_cycle = MOTOR_BRAKE + speed
+    
     servo.duty_cycle =  DUTY_CYCLE
+#     print("speed:",speed)
+#     print("-"*20)
+    
+#     count += 1
+    
         
 #Initialize lines position
 #Check which lines are closer them in the next frame
@@ -172,14 +278,11 @@ for f in stream:
         
         #print(line_pos)
         
-motor.duty_cycle = MOTOR_BRAKE    
+motor.duty_cycle = MOTOR_BRAKE  
+
+# with open('error_record.txt', 'w') as f:
+#     f.write(np.array2string(errlist))
     
-
-# Release resources
-stream.close()
-rawCapture.close()
-camera.close()
-
 # Release resources
 stream.close()
 rawCapture.close()
